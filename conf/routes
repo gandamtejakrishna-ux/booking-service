@@ -1,0 +1,24 @@
+# Routes
+# This file defines all application routes (Higher priority routes first)
+# https://www.playframework.com/documentation/latest/ScalaRouting
+# ~~~~
+
+# An example controller showing a sample home page
+#GET     /                           controllers.HomeController.index()
+#
+## Map static resources from the /public folder to the /assets URL path
+#GET     /assets/*file               controllers.Assets.versioned(path="/public", file: Asset)
+
+# Internal Booking APIs (called by Reception Service)
+POST    /internal/bookings                      com.hotel.booking.controllers.BookingController.createBooking
+POST    /internal/bookings/:id/checkin          com.hotel.booking.controllers.BookingController.checkIn(id:String)
+POST    /internal/bookings/:id/checkout         com.hotel.booking.controllers.BookingController.checkOut(id:String)
+GET     /internal/rooms                         com.hotel.booking.controllers.BookingController.listRooms
+GET     /internal/rooms/availability            com.hotel.booking.controllers.BookingController.getAvailability(date: String ?= "", category: String ?= "")
+GET     /internal/bookings/:id                  com.hotel.booking.controllers.BookingController.getBooking(id:String)
+
+# Health
+GET     /health                                 com.hotel.booking.controllers.HealthController.health
+
+
+GET   /assets/*file     controllers.Assets.versioned(path="/public", file)
