@@ -44,6 +44,12 @@ class KafkaPublisher @Inject()(config: Configuration)(implicit ec: ExecutionCont
     promise.future
   }
 
+
+//  lifecycle.addStopHook { () =>
+//    Future {
+//      shutdown()
+//    }
+//  }
 //  def shutdown(): Unit = {
 //    logger.info("Shutting down Kafka producer.")
 //    producer.flush()
