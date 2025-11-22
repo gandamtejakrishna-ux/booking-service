@@ -10,6 +10,17 @@ import slick.jdbc.MySQLProfile.api._
 import org.slf4j.LoggerFactory
 import play.api.libs.json._
 
+/**
+ * Periodically polls the outbox_events table and publishes pending events to Kafka.
+ * Once published successfully, marks the event as published (published = TRUE).
+ *
+ * The scheduler runs every 3 seconds and processes up to 20 events per batch.
+ *
+ * @param dbConfig  Database configuration for running Slick queries
+ * @param publisher Kafka publisher used to send JSON events
+ * @param lifecycle Ensures scheduler stops when application shuts down
+ */
+
 @Singleton
 class OutboxScheduler @Inject()(
                                  dbConfig: DbConfig,
@@ -31,7 +42,11 @@ class OutboxScheduler @Inject()(
     Future.successful(())
   }
 
-  /** Poll unprocessed outbox rows and publish them */
+  /**
+   * Fetches all unpublished outbox events (published = FALSE),
+   * attaches eventType to the payload JSON and sends them for publishing.
+   */
+
   private def poll(): Unit = {
 
     // Fetch event_type also (IMPORTANT!)
@@ -58,7 +73,14 @@ class OutboxScheduler @Inject()(
     }
   }
 
-  /** Publish and mark as published */
+  /**
+   * Publishes an event to Kafka.
+   * If publish succeeds → updates published = TRUE in database.
+   * If publish fails → logs error and retry will happen in next poll cycle.
+   *
+   * @param id      Outbox row ID
+   * @param payload JSON payload to publish
+   */
   private def publishEvent(id: Long, payload: JsValue): Unit = {
     publisher.publish(payload).map { _ =>
       val updateQuery =

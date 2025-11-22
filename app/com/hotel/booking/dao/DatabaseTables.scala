@@ -3,7 +3,13 @@ package com.hotel.booking.dao
 import slick.jdbc.MySQLProfile.api._
 import slick.lifted.Tag
 import play.api.libs.json._
-
+/**
+ * DatabaseTables
+ *
+ * Contains Slick table mappings for all entities:
+ * rooms, categories, guests, bookings, outbox, logs, schedules.
+ * Also defines JSON → String column conversion support.
+ */
 object DatabaseTables {
 
 

@@ -12,6 +12,11 @@ import play.api.libs.json._
 import java.sql.{Date, Timestamp}
 import org.slf4j.LoggerFactory
 
+/**
+ * BookingService handles all booking-related operations:
+ * creating bookings, check-in, check-out, room availability,
+ * and writing outbox events for Kafka publishing.
+ */
 @Singleton
 class BookingService @Inject()(
                                 dbConfig: DbConfig
@@ -20,6 +25,10 @@ class BookingService @Inject()(
   private val logger = LoggerFactory.getLogger(this.getClass)
   private val db = dbConfig.database
 
+  /**
+   * Finds the first available room in a category for the given date range.
+   * Filters out rooms that overlap with existing bookings.
+   */
   private def findAvailableRoomId(
                                    categoryName: String,
                                    checkIn: Date,
@@ -40,7 +49,13 @@ class BookingService @Inject()(
     roomsInCategory.filterNot(rid => occupied.filter(_ === rid).exists).take(1).result.headOption
   }
 
-  //  CREATE BOOKING
+  /**
+   * Creates a new booking:
+   *  - Inserts guest
+   *  - Allocates room
+   *  - Inserts booking record
+   *  - Writes outbox event BOOKING_CREATED
+   */
   def createBooking(req: CreateBookingRequest): Future[String] = {
     val bookingId = UUID.randomUUID().toString
     val guest = req.guest
@@ -108,7 +123,12 @@ class BookingService @Inject()(
     }
   }
 
-  //  CHECK-IN
+  /**
+   * Marks a booking as CHECKED_IN:
+   *  - Stores check-in time
+   *  - Optionally updates ID proof URL
+   *  - Writes outbox event CHECKED_IN
+   */
   def checkIn(bookingId: String, req: CheckInRequest): Future[Unit] = {
 
     val payloadJson = Json.obj(
@@ -163,7 +183,12 @@ class BookingService @Inject()(
     db.run(action.transactionally)
   }
 
-  //  CHECK-OUT
+  /**
+   * Marks a booking as CHECKED_OUT:
+   *  - Saves check-out timestamp
+   *  - Updates room status to CLEANING
+   *  - Writes outbox event CHECKED_OUT
+   */
   def checkOut(bookingId: String, req: CheckOutRequest): Future[Unit] = {
 
     val payloadJson = Json.obj(
@@ -209,7 +234,9 @@ class BookingService @Inject()(
     db.run(action.transactionally)
   }
 
-  //  GET BOOKING
+  /**
+   * Fetches booking details by ID.
+   */
   def getBooking(bookingId: String): Future[Option[Booking]] = {
     db.run(bookings.filter(_.id === bookingId).result.headOption).map {
       case Some((id, guestId, roomId, cid, cod, cit, cot, status)) =>
@@ -229,14 +256,19 @@ class BookingService @Inject()(
     }
   }
 
-  //  LIST ROOMS
+  /**
+   * Returns all rooms in the hotel.
+   */
   def listRooms(): Future[Seq[Room]] = {
     db.run(rooms.result).map(_.map {
       case (id, floor, number, catId, status) => Room(id, floor, number, catId, status)
     })
   }
 
-  //  AVAILABILITY (simple)
+  /**
+   * Returns rooms for a specific category and date.
+   * (Simple availability lookup — not booking-aware)
+   */
   def getAvailability(date: String, category: String): Future[Seq[Room]] = {
     val q = for {
       rc <- roomCategories if rc.name === category
