@@ -63,7 +63,12 @@ class BookingService @Inject()(
     val payloadJson = Json.obj(
       "eventType" -> "BOOKING_CREATED",
       "bookingId" -> bookingId,
-      "guest" -> Json.toJson(guest),
+      "guest" -> Json.obj(
+        "email" -> guest.email,
+        "firstName" -> guest.firstName,
+        "lastName" -> guest.lastName,
+        "phone" -> guest.phone
+      ),
       "category" -> req.category,
       "checkInDate" -> req.checkInDate,
       "checkOutDate" -> req.checkOutDate
@@ -131,57 +136,124 @@ class BookingService @Inject()(
    */
   def checkIn(bookingId: String, req: CheckInRequest): Future[Unit] = {
 
-    val payloadJson = Json.obj(
-      "eventType" -> "CHECKED_IN",
-      "bookingId" -> bookingId,
-      "idProofUrl" -> req.idProofUrl,
-      "checkInTime" -> req.checkInTime
-    )
 
     val action = for {
-      // Parse ISO → Timestamp safely
+
+      // Validate booking exists
+      bookingOpt <- bookings.filter(_.id === bookingId).result.headOption
+      booking <- bookingOpt match {
+        case Some(row) => DBIO.successful(row)
+        case None      => DBIO.failed(new Exception("Booking not found"))
+      }
+
+      guestOpt <- guests.filter(_.id === booking._2).result.headOption
+      guest <- guestOpt match {
+        case Some(g) => DBIO.successful(g)
+        case None    => DBIO.failed(new Exception("Guest not found"))
+      }
+
+      // Prevent duplicate check-in
+      _ <- if (booking._8 == "CHECKED_IN")
+        DBIO.failed(new Exception("Already checked in"))
+      else DBIO.successful(())
+
       parsedTs <- DBIO.successful(
-        req.checkInTime.map { tsStr =>
-          val normalized = tsStr.replace("T", " ")
-          Timestamp.valueOf(normalized)
-        }
+        req.checkInTime.map(ts => Timestamp.valueOf(ts.replace("T", " ")))
       )
 
-      // Update the booking
-      _ <- bookings
-        .filter(_.id === bookingId)
+      // Update booking row
+      _ <- bookings.filter(_.id === bookingId)
         .map(b => (b.status, b.checkInTime))
         .update(("CHECKED_IN", parsedTs))
 
-      // Fetching guestId
-      bRowOpt <- bookings.filter(_.id === bookingId).result.headOption
-      _ <- bRowOpt match {
-        case Some((_, guestId, _, _, _, _, _, _)) =>
-          req.idProofUrl match {
-            case Some(url) =>
-              guests.filter(_.id === guestId).map(_.idProofUrl).update(Some(url))
-            case None =>
-              DBIO.successful(0)
-          }
-        case None =>
-          DBIO.failed(new Exception("Booking not found"))
+      // Update guest ID proof if provided
+      _ <- req.idProofUrl match {
+        case Some(url) =>
+          guests.filter(_.id === booking._2)
+            .map(_.idProofUrl)
+            .update(Some(url))
+        case None => DBIO.successful(0)
       }
 
-      // Inserting outbox
-      _ <- (outbox returning outbox.map(_.id)) +=
-        OutboxRow(
-          0L,
-          Some(bookingId),
-          Some("Booking"),
-          "CHECKED_IN",
-          Json.stringify(payloadJson),
-          false
+      payloadJson <- DBIO.successful(
+        Json.obj(
+          "eventType"   -> "CHECKED_IN",
+          "bookingId"   -> bookingId,
+          "guest" -> Json.obj(
+            "email"      -> guest._4,    // EMAIL ADDED HERE
+            "firstName"  -> guest._2,
+            "lastName"   -> guest._3,
+            "phone"      -> guest._5
+          ),
+          "idProofUrl"  -> req.idProofUrl,
+          "checkInTime" -> req.checkInTime
         )
+      )
+
+      // UPDATE OUTBOX (not insert)
+      _ <- outbox
+        .filter(_.aggregateId === bookingId)
+        .map(o => (o.eventType, o.payload, o.published))
+        .update(("CHECKED_IN", Json.stringify(payloadJson), false))
 
     } yield ()
 
     db.run(action.transactionally)
   }
+
+  //  def checkIn(bookingId: String, req: CheckInRequest): Future[Unit] = {
+//
+//    val payloadJson = Json.obj(
+//      "eventType" -> "CHECKED_IN",
+//      "bookingId" -> bookingId,
+//      "idProofUrl" -> req.idProofUrl,
+//      "checkInTime" -> req.checkInTime
+//    )
+//
+//    val action = for {
+//      // Parse ISO → Timestamp safely
+//      parsedTs <- DBIO.successful(
+//        req.checkInTime.map { tsStr =>
+//          val normalized = tsStr.replace("T", " ")
+//          Timestamp.valueOf(normalized)
+//        }
+//      )
+//
+//      // Update the booking
+//      _ <- bookings
+//        .filter(_.id === bookingId)
+//        .map(b => (b.status, b.checkInTime))
+//        .update(("CHECKED_IN", parsedTs))
+//
+//      // Fetching guestId
+//      bRowOpt <- bookings.filter(_.id === bookingId).result.headOption
+//      _ <- bRowOpt match {
+//        case Some((_, guestId, _, _, _, _, _, _)) =>
+//          req.idProofUrl match {
+//            case Some(url) =>
+//              guests.filter(_.id === guestId).map(_.idProofUrl).update(Some(url))
+//            case None =>
+//              DBIO.successful(0)
+//          }
+//        case None =>
+//          DBIO.failed(new Exception("Booking not found"))
+//      }
+//
+//      // Inserting outbox
+//      _ <- (outbox returning outbox.map(_.id)) +=
+//        OutboxRow(
+//          0L,
+//          Some(bookingId),
+//          Some("Booking"),
+//          "CHECKED_IN",
+//          Json.stringify(payloadJson),
+//          false
+//        )
+//
+//    } yield ()
+//
+//    db.run(action.transactionally)
+//  }
 
   /**
    * Marks a booking as CHECKED_OUT:
@@ -191,48 +263,104 @@ class BookingService @Inject()(
    */
   def checkOut(bookingId: String, req: CheckOutRequest): Future[Unit] = {
 
-    val payloadJson = Json.obj(
-      "eventType" -> "CHECKED_OUT",
-      "bookingId" -> bookingId,
-      "checkOutTime" -> req.checkOutTime
-    )
-
     val action = for {
+
+      bookingOpt <- bookings.filter(_.id === bookingId).result.headOption
+      booking <- bookingOpt match {
+        case Some(b) => DBIO.successful(b)
+        case None    => DBIO.failed(new Exception("Booking not found"))
+      }
+
+      // Prevent double check-out
+      _ <- if (booking._8 == "CHECKED_OUT")
+        DBIO.failed(new Exception("Already checked out"))
+      else DBIO.successful(())
+
       parsedTs <- DBIO.successful(
         req.checkOutTime.map(ts => Timestamp.valueOf(ts))
       )
 
-      // Update status + time
-      _ <- bookings
-        .filter(_.id === bookingId)
+      // Update booking
+      _ <- bookings.filter(_.id === bookingId)
         .map(b => (b.status, b.checkOutTime))
         .update(("CHECKED_OUT", parsedTs))
 
-      bookingRowOpt <- bookings.filter(_.id === bookingId).result.headOption
-      roomId <- bookingRowOpt match {
-        case Some((_, _, roomId, _, _, _, _, _)) =>
-          DBIO.successful(roomId)
-        case None =>
-          DBIO.failed(new Exception("Booking not found"))
+      // Update room to CLEANING
+      _ <- rooms.filter(_.id === booking._3)
+        .map(_.status)
+        .update("CLEANING")
+
+      guestOpt <- guests.filter(_.id === booking._2).result.headOption
+      guest <- guestOpt match {
+        case Some(g) => DBIO.successful(g)
+        case None    => DBIO.failed(new Exception("Guest not found"))
       }
-
-      _ <- rooms.filter(_.id === roomId).map(_.status).update("CLEANING")
-
-      // Insert outbox
-      _ <- (outbox returning outbox.map(_.id)) +=
-        OutboxRow(
-          0L,
-          Some(bookingId),
-          Some("Booking"),
-          "CHECKED_OUT",
-          Json.stringify(payloadJson),
-          false
-        )
+      val payloadJson = Json.obj(
+        "eventType"    -> "CHECKED_OUT",
+        "bookingId"    -> bookingId,
+        "guest" -> Json.obj(
+          "email"      -> guest._4,    // EMAIL ADDED HERE
+          "firstName"  -> guest._2,
+          "lastName"   -> guest._3,
+          "phone"      -> guest._5
+        ),
+        "checkOutTime" -> req.checkOutTime
+      )
+      // UPDATE OUTBOX
+      _ <- outbox
+        .filter(_.aggregateId === bookingId)
+        .map(o => (o.eventType, o.payload, o.published))
+        .update(("CHECKED_OUT", Json.stringify(payloadJson), false))
 
     } yield ()
 
     db.run(action.transactionally)
   }
+
+  //  def checkOut(bookingId: String, req: CheckOutRequest): Future[Unit] = {
+//
+//    val payloadJson = Json.obj(
+//      "eventType" -> "CHECKED_OUT",
+//      "bookingId" -> bookingId,
+//      "checkOutTime" -> req.checkOutTime
+//    )
+//
+//    val action = for {
+//      parsedTs <- DBIO.successful(
+//        req.checkOutTime.map(ts => Timestamp.valueOf(ts))
+//      )
+//
+//      // Update status + time
+//      _ <- bookings
+//        .filter(_.id === bookingId)
+//        .map(b => (b.status, b.checkOutTime))
+//        .update(("CHECKED_OUT", parsedTs))
+//
+//      bookingRowOpt <- bookings.filter(_.id === bookingId).result.headOption
+//      roomId <- bookingRowOpt match {
+//        case Some((_, _, roomId, _, _, _, _, _)) =>
+//          DBIO.successful(roomId)
+//        case None =>
+//          DBIO.failed(new Exception("Booking not found"))
+//      }
+//
+//      _ <- rooms.filter(_.id === roomId).map(_.status).update("CLEANING")
+//
+//      // Insert outbox
+//      _ <- (outbox returning outbox.map(_.id)) +=
+//        OutboxRow(
+//          0L,
+//          Some(bookingId),
+//          Some("Booking"),
+//          "CHECKED_OUT",
+//          Json.stringify(payloadJson),
+//          false
+//        )
+//
+//    } yield ()
+//
+//    db.run(action.transactionally)
+//  }
 
   /**
    * Fetches booking details by ID.
